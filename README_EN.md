@@ -59,19 +59,6 @@ vultr-speed-test.sh [OPTIONS]
   ...
 ```
 
-## How It Works
-
-1. **Parallel ping** — All data centers are pinged simultaneously for speed.
-2. **Cross-platform** — Works on both macOS and Linux.
-3. **Smart ranking** — Sorted by average latency; unreachable hosts placed at bottom.
-4. **Color-coded** — Green (<50ms), Yellow (50-150ms), Red (>150ms), Gray (timeout).
-5. **Optional speed test** — Download test uses Vultr's 100MB test file.
-
-## Requirements
-
-- Bash 3.2+ (macOS default works)
-- `ping` (pre-installed on macOS/Linux)
-- `curl` (only needed for `-d` download speed test)
 
 ## Notes
 
