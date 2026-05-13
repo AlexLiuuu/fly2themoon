@@ -67,7 +67,11 @@ usage() {
     cat <<'EOF'
 fly2themoon - Find the best Vultr region for your network
 
-Usage: fly2themoon.sh [OPTIONS]
+Usage: vultr-speed-test.sh [OPTIONS]
+
+Tests all 33 Vultr regions with ICMP ping and HTTPS timing (TCP connect,
+TLS handshake, TTFB). Ranks by weighted score combining latency, packet
+loss, and real HTTPS performance.
 
 Options:
   -c, --count N         Number of pings per host (default: 20)
@@ -77,10 +81,10 @@ Options:
   -h, --help            Show this help
 
 Examples:
-  ./fly2themoon.sh                    # Test all 33 regions
-  ./fly2themoon.sh -c 5               # 5 pings each (faster)
-  ./fly2themoon.sh -d                 # Include download speed test
-  ./fly2themoon.sh -o results.csv     # Save to CSV
+  ./vultr-speed-test.sh                    # Test all 33 regions
+  ./vultr-speed-test.sh -c 5              # 5 pings each (faster)
+  ./vultr-speed-test.sh -d                 # Include download speed test
+  ./vultr-speed-test.sh -o results.csv     # Save to CSV
 EOF
     exit 0
 }
@@ -126,12 +130,34 @@ ping_host() {
     echo "${avg}|${min}|${max}|${stddev}|${loss}|${host}|${location}" > "$result_file"
 }
 
+https_test() {
+    local host="$1" tmpdir="$2"
+    local output tcp tls ttfb
+
+    output=$(curl -o /dev/null -s -w '%{time_connect}|%{time_appconnect}|%{time_starttransfer}' \
+        --max-time 10 --connect-timeout 5 "https://$host/vultr.com.100MB.bin" 2>/dev/null || true)
+
+    if [ -n "$output" ]; then
+        IFS='|' read -r tcp tls ttfb <<< "$output"
+        tcp=$(awk "BEGIN{printf \"%.1f\", $tcp * 1000}")
+        tls=$(awk "BEGIN{printf \"%.1f\", $tls * 1000}")
+        ttfb=$(awk "BEGIN{printf \"%.1f\", $ttfb * 1000}")
+        if [ "$tls" = "0.0" ]; then
+            tcp="999" tls="999" ttfb="999"
+        fi
+    else
+        tcp="999" tls="999" ttfb="999"
+    fi
+
+    echo "${tcp}|${tls}|${ttfb}" > "$tmpdir/${host}.https"
+}
+
 run_pings() {
     local tmpdir="$1"
     local total=${#DATACENTERS[@]}
     local entry host location region
 
-    printf "  Pinging %d data centers (%d times each)...\n\n" "$total" "$COUNT"
+    printf "  Phase 1/2: Ping (%d hosts, %d times each)\n\n" "$total" "$COUNT"
 
     for entry in "${DATACENTERS[@]}"; do
         IFS='|' read -r host location region <<< "$entry"
@@ -142,27 +168,87 @@ run_pings() {
     while [ "$done_count" -lt "$total" ]; do
         sleep 0.5
         done_count=$(find "$tmpdir" -name "*.result" 2>/dev/null | wc -l | tr -d ' ')
-        printf "\r  Progress: %d/%d" "$done_count" "$total"
+        printf "\r  Ping: %d/%d" "$done_count" "$total"
     done
     wait
-    printf "\r  Progress: %d/%d  done\n\n" "$total" "$total"
+    printf "\r  Ping: %d/%d  done\n" "$total" "$total"
+}
+
+run_https_tests() {
+    local tmpdir="$1"
+    local total=${#DATACENTERS[@]}
+    local entry host location region
+
+    printf "  Phase 2/2: HTTPS timing\n\n"
+
+    for entry in "${DATACENTERS[@]}"; do
+        IFS='|' read -r host location region <<< "$entry"
+        ( https_test "$host" "$tmpdir" ) &
+    done
+
+    local done_count=0
+    while [ "$done_count" -lt "$total" ]; do
+        sleep 0.5
+        done_count=$(find "$tmpdir" -name "*.https" 2>/dev/null | wc -l | tr -d ' ')
+        printf "\r  HTTPS: %d/%d" "$done_count" "$total"
+    done
+    wait
+    printf "\r  HTTPS: %d/%d  done\n\n" "$total" "$total"
+}
+
+compute_score() {
+    local avg="$1" loss="$2" ttfb="$3"
+    awk "BEGIN {
+        lat = ($avg >= 999) ? 0 : (100 - $avg / 5)
+        if (lat < 0) lat = 0
+        ls = 100 - $loss * 3
+        if (ls < 0) ls = 0
+        ts = ($ttfb >= 999) ? 0 : (100 - $ttfb / 10)
+        if (ts < 0) ts = 0
+        if ($ttfb >= 999) {
+            score = (0.40 * ls + 0.60 * lat) * 0.6
+        } else {
+            score = 0.30 * ls + 0.35 * ts + 0.35 * lat
+        }
+        printf \"%.0f\", score
+    }"
 }
 
 parse_results() {
     local tmpdir="$1"
+    local raw_file="$tmpdir/raw.txt"
     local results_file="$tmpdir/sorted.txt"
 
-    cat "$tmpdir"/*.result | sort -t'|' -k1 -g > "$results_file"
+    > "$raw_file"
+
+    for f in "$tmpdir"/*.result; do
+        [ -f "$f" ] || continue
+        local avg min max stddev loss host location
+        IFS='|' read -r avg min max stddev loss host location < "$f"
+
+        local tcp="999" tls="999" ttfb="999"
+        local https_file="$tmpdir/${host}.https"
+        if [ -f "$https_file" ]; then
+            IFS='|' read -r tcp tls ttfb < "$https_file"
+        fi
+
+        local score
+        score=$(compute_score "$avg" "$loss" "$ttfb")
+
+        echo "${score}|${avg}|${min}|${max}|${stddev}|${loss}|${tcp}|${tls}|${ttfb}|${host}|${location}" >> "$raw_file"
+    done
+
+    sort -t'|' -k1 -rn "$raw_file" > "$results_file"
     echo "$results_file"
 }
 
-color_latency() {
-    local avg="$1"
-    if [ "$avg" = "999" ]; then
+color_score() {
+    local score="$1"
+    if [ "$score" -le 0 ] 2>/dev/null; then
         printf "%s" "$DIM"
-    elif awk "BEGIN{exit !($avg < 50)}" 2>/dev/null; then
+    elif [ "$score" -ge 70 ] 2>/dev/null; then
         printf "%s" "$GREEN"
-    elif awk "BEGIN{exit !($avg < 150)}" 2>/dev/null; then
+    elif [ "$score" -ge 40 ] 2>/dev/null; then
         printf "%s" "$YELLOW"
     else
         printf "%s" "$RED"
@@ -170,11 +256,11 @@ color_latency() {
 }
 
 format_val() {
-    local val="$1"
-    if [ "$val" = "999" ]; then
-        printf "%7s" "---"
+    local val="$1" width="${2:-8}"
+    if [ "$val" = "999" ] || [ "$val" = "999.0" ]; then
+        printf "%${width}s" "---"
     else
-        printf "%7s" "$val"
+        printf "%${width}s" "$val"
     fi
 }
 
@@ -182,22 +268,23 @@ print_table() {
     local results_file="$1"
     local rank=0
 
-    printf "  ${BOLD}%-4s %-18s %7s  %7s  %7s  %5s" "#" "Location" "Avg(ms)" "Min(ms)" "Max(ms)" "Loss"
+    printf "  ${BOLD}%-4s %-18s %5s  %8s  %5s  %8s" "#" "Location" "Score" "Ping(ms)" "Loss" "TTFB(ms)"
     if [ "$DOWNLOAD" = true ]; then
         printf "  %10s" "Speed"
     fi
     printf "${RESET}\n"
 
-    printf "  %-4s %-18s %7s  %7s  %7s  %5s" "---" "------------------" "-------" "-------" "-------" "-----"
+    printf "  %-4s %-18s %5s  %8s  %5s  %8s" "---" "------------------" "-----" "--------" "-----" "--------"
     if [ "$DOWNLOAD" = true ]; then
         printf "  %10s" "----------"
     fi
     printf "\n"
 
-    while IFS='|' read -r avg min max stddev loss host location; do
+    while IFS='|' read -r score avg min max stddev loss tcp tls ttfb host location; do
         rank=$((rank + 1))
         local color
-        color=$(color_latency "$avg")
+        color=$(color_score "$score")
+
         local loss_str
         if [ "$loss" = "100" ] && [ "$avg" = "999" ]; then
             loss_str="100%"
@@ -205,8 +292,8 @@ print_table() {
             loss_str="${loss}%"
         fi
 
-        printf "  ${color}%-4s %-18s $(format_val "$avg")  $(format_val "$min")  $(format_val "$max")  %5s" \
-            "$rank" "$location" "$loss_str"
+        printf "  ${color}%-4s %-18s %5s  $(format_val "$avg")  %5s  $(format_val "$ttfb")" \
+            "$rank" "$location" "$score" "$loss_str"
 
         if [ "$DOWNLOAD" = true ]; then
             local speed_file="$TMPDIR_PATH/${host}.speed"
@@ -248,7 +335,7 @@ run_downloads() {
 
     printf "  Running download speed tests (top %d)...\n\n" "$TOP_N"
 
-    while IFS='|' read -r avg _ _ _ _ host location; do
+    while IFS='|' read -r score avg _ _ _ _ _ _ _ host location; do
         if [ "$avg" = "999" ]; then
             continue
         fi
@@ -267,9 +354,9 @@ save_csv() {
     local results_file="$1" output_file="$2"
     local rank=0
 
-    echo "rank,location,host,avg_ms,min_ms,max_ms,loss_pct,speed_mbps" > "$output_file"
+    echo "rank,location,host,score,avg_ms,loss_pct,tcp_ms,tls_ms,ttfb_ms,speed_mbps" > "$output_file"
 
-    while IFS='|' read -r avg min max stddev loss host location; do
+    while IFS='|' read -r score avg min max stddev loss tcp tls ttfb host location; do
         rank=$((rank + 1))
         local speed=""
         local speed_file="$TMPDIR_PATH/${host}.speed"
@@ -279,10 +366,12 @@ save_csv() {
                 speed=""
             fi
         fi
-        if [ "$avg" = "999" ]; then
-            avg="" min="" max=""
-        fi
-        echo "$rank,$location,$host,$avg,$min,$max,$loss,$speed" >> "$output_file"
+        local csv_avg="$avg" csv_tcp="$tcp" csv_tls="$tls" csv_ttfb="$ttfb"
+        if [ "$avg" = "999" ]; then csv_avg=""; fi
+        if [ "$tcp" = "999" ] || [ "$tcp" = "999.0" ]; then csv_tcp=""; fi
+        if [ "$tls" = "999" ] || [ "$tls" = "999.0" ]; then csv_tls=""; fi
+        if [ "$ttfb" = "999" ] || [ "$ttfb" = "999.0" ]; then csv_ttfb=""; fi
+        echo "$rank,$location,$host,$score,$csv_avg,$loss,$csv_tcp,$csv_tls,$csv_ttfb,$speed" >> "$output_file"
     done < "$results_file"
 
     printf "  Results saved to: %s\n\n" "$output_file"
@@ -302,10 +391,11 @@ main() {
     trap cleanup EXIT INT TERM
 
     printf "\n"
-    printf "  ${BOLD}fly2themoon - Vultr Latency Test${RESET}\n"
+    printf "  ${BOLD}fly2themoon - Vultr Speed Test${RESET}\n"
     printf "  %s | %d DCs | Pings: %d\n\n" "$(date '+%Y-%m-%d %H:%M')" "${#DATACENTERS[@]}" "$COUNT"
 
     run_pings "$TMPDIR_PATH"
+    run_https_tests "$TMPDIR_PATH"
 
     local results_file
     results_file=$(parse_results "$TMPDIR_PATH")
@@ -315,7 +405,8 @@ main() {
     fi
 
     print_table "$results_file"
-    printf "\n"
+
+    printf "\n  ${DIM}Score = 35%% ping + 30%% loss + 35%% HTTPS TTFB (higher is better)${RESET}\n\n"
 
     if [ -n "$OUTPUT" ]; then
         save_csv "$results_file" "$OUTPUT"

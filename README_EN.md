@@ -2,7 +2,7 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-Find the best Vultr region for your current network by testing latency, packet loss, and download speed. One script, zero dependencies.
+Find the best Vultr region for your current network by testing latency, packet loss, and HTTPS timing. Ranked by a weighted score. One script, zero dependencies.
 
 ## Quick Start
 
@@ -46,19 +46,37 @@ vultr-speed-test.sh [OPTIONS]
 ## Sample Output
 
 ```
-  fly2themoon - Vultr Latency Test
-  2026-05-06 17:30 | 33 DCs | Pings: 20
+  fly2themoon - Vultr Speed Test
+  2026-05-12 21:48 | 33 DCs | Pings: 5
 
-  #    Location           Avg(ms)  Min(ms)  Max(ms)   Loss
-  ---  ------------------ -------  -------  -------  -----
-  1    Singapore             81.4     79.7     84.7   0.0%
-  2    Silicon Valley       163.3    163.3    163.3  66.7%
-  3    Los Angeles          180.5    180.1    181.0   0.0%
-  4    Delhi NCR            200.3    200.3    200.4  33.3%
-  5    Seoul                205.9    205.7    206.2  33.3%
+  #    Location           Score  Ping(ms)   Loss  TTFB(ms)
+  ---  ------------------ -----  --------  -----  --------
+  1    Delhi NCR             71   142.659   0.0%     551.1
+  2    Atlanta               55   278.087   0.0%     731.9
+  3    Silicon Valley        48   170.187   0.0%    1109.0
+  4    Dallas                45   208.180   0.0%    1191.1
+  5    Honolulu              43   233.663   0.0%    1099.6
   ...
+
+  Score = 35% ping + 30% loss + 35% HTTPS TTFB (higher is better)
 ```
 
+## Scoring
+
+The script runs two rounds of tests per node:
+
+1. **ICMP Ping** — measures latency and packet loss
+2. **HTTPS Timing** — measures TCP connect, TLS handshake, and Time to First Byte (TTFB)
+
+Weighted scoring formula:
+
+| Metric | Weight | Why |
+|--------|--------|-----|
+| Ping latency | 35% | Baseline network quality |
+| Packet loss | 30% | Loss is the biggest killer for proxy experience |
+| HTTPS TTFB | 35% | Closest to real-world browsing experience |
+
+Higher score = better. Nodes where HTTPS fails are penalized.
 
 ## Notes
 
