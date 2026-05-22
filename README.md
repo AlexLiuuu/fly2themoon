@@ -1,94 +1,99 @@
 # fly2themoon
 
-[中文](README.md) | [English](README_EN.md)
+[English](README.md) | [中文](README_CN.md)
 
-快速测试当前网络下最适合的 Vultr 节点：延迟、丢包、HTTPS 首包时间一键对比，按综合评分排序。单脚本，零依赖。
+Find the best Vultr region for your network. Runs 3 rounds by default, ranks by median score, and filters out transient GFW interference. One script, zero dependencies.
 
-## 快速开始
+## Quick Start
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AlexLiuuu/fly2themoon/main/vultr-speed-test.sh | bash
 ```
 
-## 使用方法
+## Usage
 
 ```
-vultr-speed-test.sh [选项]
+vultr-speed-test.sh [OPTIONS]
 ```
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| `-c, --count N` | 每个节点 ping 次数 | `20` |
-| `-d, --download` | 对排名靠前的节点做下载测速 | 关 |
-| `-n, --top N` | 下载测速取前 N 个 | `5` |
-| `-o, --output FILE` | 保存结果到 CSV 文件 | — |
-| `-h, --help` | 显示帮助 | — |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-c, --count N` | Number of pings per host | `50` |
+| `-R, --rounds N` | Test rounds (median across rounds) | `3` |
+| `-r, --region REGIONS` | Filter regions: ap,na,sa,eu,me | all |
+| `-v, --verbose` | Show TCP connect and TLS handshake times | off |
+| `-j, --jobs N` | Max parallel jobs (0 = unlimited) | `0` |
+| `-d, --download` | Run download speed test on top results | off |
+| `-n, --top N` | How many top hosts to speed-test | `5` |
+| `-o, --output FILE` | Save results to CSV | — |
+| `-h, --help` | Show help | — |
 
-## 测试节点 (33 个)
-
-| 区域 | 节点 |
-|------|------|
-| 亚太 (9) | 东京、大阪、新加坡、首尔、班加罗尔、德里、孟买、悉尼、墨尔本 |
-| 北美 (11) | 洛杉矶、硅谷、西雅图、檀香山、芝加哥、亚特兰大、迈阿密、新泽西、达拉斯、多伦多、墨西哥城 |
-| 南美 (2) | 圣保罗、圣地亚哥 |
-| 欧洲 (9) | 伦敦、曼彻斯特、巴黎、法兰克福、阿姆斯特丹、华沙、马德里、斯德哥尔摩、布加勒斯特 |
-| 中东/非洲 (2) | 特拉维夫、约翰内斯堡 |
-
-## 示例
+## Examples
 
 ```bash
-./vultr-speed-test.sh              # 测试全部 33 个节点
-./vultr-speed-test.sh -c 5         # 每个 ping 5 次（更快）
-./vultr-speed-test.sh -d -n 3      # 对前 3 名做下载测速
-./vultr-speed-test.sh -o result.csv # 保存结果到 CSV
+./vultr-speed-test.sh                # 3 rounds, all 33 regions
+./vultr-speed-test.sh -R 1           # Single round (quick test)
+./vultr-speed-test.sh -r ap,na       # Only Asia Pacific + North America
+./vultr-speed-test.sh -v             # Show TCP/TLS breakdown
+./vultr-speed-test.sh -d -n 3        # Download test for top 3
+./vultr-speed-test.sh -o result.csv  # Save to CSV
 ```
 
-## 输出示例
+## Sample Output
 
 ```
   fly2themoon - Vultr Speed Test
-  2026-05-12 21:48 | 33 DCs | Pings: 5
+  2026-05-23 01:49 | 33 DCs | 3 rounds x 5 pings
 
-  #    Location           Score  Ping(ms)   Loss  TTFB(ms)
-  ---  ------------------ -----  --------  -----  --------
-  1    Delhi NCR             71   142.659   0.0%     551.1
-  2    Atlanta               55   278.087   0.0%     731.9
-  3    Silicon Valley        48   170.187   0.0%    1109.0
-  4    Dallas                45   208.180   0.0%    1191.1
-  5    Honolulu              43   233.663   0.0%    1099.6
+  #    Location           Score   Stab  Ping(ms)   Loss  TTFB(ms)
+  ---  ------------------ -----  -----  --------  -----  --------
+  1    Los Angeles           86   ±11   176.713   0.0%     657.3
+  2    Dallas                83    ±5   200.167   0.0%     748.1
+  3    New Jersey            82    ±2   231.989   0.0%     762.8
+  4    Silicon Valley        76   ±34   160.688   0.0%     629.9
+  5    Tokyo                 28   ±43   150.515  20.0%    2821.7
   ...
 
-  Score = 35% ping + 30% loss + 35% HTTPS TTFB (higher is better)
+  Recommended: Los Angeles (86, ±11), Dallas (83, ±5), New Jersey (82, ±2)
+
+  Score = 20% ping + 35% loss + 30% TTFB + 15% jitter (median of 3 rounds)
+  Stab = score range across rounds (lower = more consistent)
 ```
 
-## 评分说明
+**Stab (stability)** is the key column — a high score with ±30+ means the node is unreliable. Pick nodes with high score AND low Stab.
 
-脚本对每个节点进行两轮测试：
+## Scoring
 
-1. **ICMP Ping** — 测量延迟、丢包率
-2. **HTTPS 计时** — 测量 TCP 连接、TLS 握手、首包时间 (TTFB)
+| Metric | Weight | Why |
+|--------|--------|-----|
+| Packet loss | 35% | Quadratic penalty — loss kills proxy experience |
+| HTTPS TTFB | 30% | Time to first byte, closest to real browsing |
+| Ping latency | 20% | Baseline network quality |
+| Jitter | 15% | Latency variance, affects video streaming |
 
-综合评分公式：
+Multi-round testing uses median scores to filter out random GFW interference.
 
-| 指标 | 权重 | 原因 |
-|------|------|------|
-| Ping 延迟 | 35% | 基础网络质量 |
-| 丢包率 | 30% | 丢包对代理体验伤害最大 |
-| HTTPS TTFB | 35% | 最接近真实使用体验 |
+## Data Centers (33)
 
-评分越高越好。HTTPS 不可达的节点会被降权。
+| Region | Locations |
+|--------|-----------|
+| Asia Pacific (9) | Tokyo, Osaka, Singapore, Seoul, Bangalore, Delhi, Mumbai, Sydney, Melbourne |
+| North America (11) | Los Angeles, Silicon Valley, Seattle, Honolulu, Chicago, Atlanta, Miami, New Jersey, Dallas, Toronto, Mexico City |
+| South America (2) | Sao Paulo, Santiago |
+| Europe (9) | London, Manchester, Paris, Frankfurt, Amsterdam, Warsaw, Madrid, Stockholm, Milan |
+| Middle East & Africa (2) | Tel Aviv, Johannesburg |
 
-## 注意事项
+## Notes
 
-- 部分网络或防火墙可能屏蔽 ICMP（ping），受影响的节点会显示 `---` 并排到最后
-- 在中国大陆，部分 Vultr IP 段可能被封锁。如果新建实例无法连接，可以销毁重建获取新 IP，或尝试其他区域
-- 输出重定向到文件时自动禁用颜色
+- Some networks or firewalls may block ICMP (ping) — affected hosts show as `---` and sort to the bottom.
+- In mainland China, some Vultr IP ranges may be blocked. If a new instance is unreachable, destroy and recreate to get a new IP, or try a different region.
+- Colors are auto-disabled when piping output to a file.
 
-## 在 Vultr 上自建梯子
+## Build Your Own VPN on Vultr
 
-用本工具找到最佳节点后，可以在 Vultr 上自建代理服务器。参考教程：
+After finding the best region with this tool, set up your own proxy server on Vultr:
 
-[自建 v2ray 服务器教程](https://github.com/Alvin9999-newpac/fanqiang/blob/main/%E8%87%AA%E5%BB%BAv2ray%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%95%99%E7%A8%8B.md)
+[v2ray server setup tutorial](https://github.com/Alvin9999-newpac/fanqiang/blob/main/%E8%87%AA%E5%BB%BAv2ray%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%95%99%E7%A8%8B.md)
 
 ## License
 
